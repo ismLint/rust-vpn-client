@@ -7,3 +7,5 @@ edition = "2024"
 tokio = { version = "1", features = ["full"]}
 tun-rs = { version = "2", features = ["async"]}
 etherparse = "0.14"
+dotenv = "0.15.0"
+dotenvy = "0.15.7"

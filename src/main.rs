@@ -1,113 +1,94 @@
+use dotenvy::dotenv;
 use etherparse::SlicedPacket;
-use tun_rs::{AsyncDevice, DeviceBuilder};
-use etherparse::NetSlice;
+use std::env;
 use std::error::Error;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::str::FromStr;
+use std::sync::Arc;
+use tokio::net::UdpSocket;
+use tun_rs::{AsyncDevice, DeviceBuilder};
 
 // configuration for the VPN client network interface
 struct VpnConfig {
-    net1: u8,
-    net2: u8,
-    net3: u8,
-    net4: u8,
-    subnet_mask: [u8; 4],
-    device_name: &'static str,
+    client_ip: Ipv4Addr,
+    subnet_mask: Ipv4Addr,
+    device_name: String,
+    server_addr: String,
 }
 
 impl VpnConfig {
-    fn new(net1: u8, net2: u8, net3: u8, net4: u8) -> Self {
-        Self {
-            net1,
-            net2,
-            net3,
-            net4,
-            subnet_mask: [255, 255, 255, 0],
-            device_name: "LintVPN-Tun",
-        }
-    }
+    fn from_env() -> Result<Self, Box<dyn Error>> {
+        dotenv().ok();
 
-    fn get_ipv4_addr(&self) -> std::net::Ipv4Addr {
-        std::net::Ipv4Addr::new(self.net1, self.net2, self.net3, self.net4)
-    }
+        let client_ip_str = env::var("VPN_CLIENT_IP").unwrap_or_else(|_| "10.8.0.2".to_string());
+        let subnet_mask_str =
+            env::var("VPN_SUBNET_MASK").unwrap_or_else(|_| "255.255.255.0".to_string());
+        let device_name =
+            env::var("VPN_DEVICE_NAME").unwrap_or_else(|_| "LintVPN-Tun".to_string());
+        let server_addr =
+            env::var("VPN_SERVER_ADDR").expect("VPN_SERVER_ADDR must be set in .env file");
 
-    fn get_subnet_mask(&self) -> std::net::Ipv4Addr {
-        std::net::Ipv4Addr::new(
-            self.subnet_mask[0],
-            self.subnet_mask[1],
-            self.subnet_mask[2],
-            self.subnet_mask[3],
-        )
-    }
-
-    fn print_ip(&self) {
-        println!(
-            "[VPN CLIENT] SUCCESS STARTED ON IP: {}.{}.{}.{}",
-            self.net1, self.net2, self.net3, self.net4
-        );
+        Ok(Self {
+            client_ip: Ipv4Addr::from_str(&client_ip_str)?,
+            subnet_mask: Ipv4Addr::from_str(&subnet_mask_str)?,
+            device_name,
+            server_addr,
+        })
     }
 }
+
 
 // builds async TUN device with the provided configuration
 fn build_device(config: &VpnConfig) -> Result<AsyncDevice, Box<dyn Error>> {
     let mut builder = DeviceBuilder::new();
-
-    builder = builder.ipv4(
-        config.get_ipv4_addr(),
-        config.get_subnet_mask(),
-        None,
-    );
+    builder = builder.ipv4(config.client_ip, config.subnet_mask, None);
 
     #[cfg(target_os = "windows")]
     {
-        builder = builder.name(config.device_name);
+        builder = builder.name(&config.device_name);
     }
 
     Ok(builder.build_async()?)
 }
 
-// processes a single packet and prints information about it
-fn process_packet(packet_bytes: &[u8]) -> Result<(), Box<dyn Error>> {
-    let packet = SlicedPacket::from_ip(packet_bytes)?;
-
-    if let Some(NetSlice::Ipv4(ipv4_header)) = packet.net {
-        let header = ipv4_header.header();
-        let src = header.source_addr();
-        let dst = header.destination_addr();
-        let proto = header.protocol();
-
-        println!(
-            "[VPN CLIENT] PACKET INTERCEPTED {} -> {} | PROTOCOL: {:?}",
-            src, dst, proto
-        );
-    }
-
-    Ok(())
-}
-
-// main packet reading loop
-async fn packet_loop(dev: AsyncDevice) -> Result<(), Box<dyn Error>> {
-    let mut buf = vec![0u8; 1500];
-
-    loop {
-        let n = dev.recv(&mut buf).await?;
-        let packet_bytes = &buf[..n];
-
-        if let Err(e) = process_packet(packet_bytes) {
-            eprintln!("[VPN CLIENT] ERROR processing packet: {}", e);
+fn log_packet(direction: &str, packet_bytes: &[u8]) {
+    if let Ok(packet) = SlicedPacket::from_ip(packet_bytes) {
+        if let Some(etherparse::NetSlice::Ipv4(hdr)) = packet.net {
+            let header = hdr.header();
+            println!(
+                "{} {} -> {} | Protocol: {:?}",
+                direction,
+                header.source_addr(),
+                header.destination_addr(),
+                header.protocol()
+            );
         }
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    println!("=== [VPN CLIENT]: STARTED NET INTERFACE ===");
+/*
+TASK 1: read from TUN -> transfer on UDP at VPS
+TASk 2: read from UDP -> write to local TUN
+ */
 
-    // initialize configuration (change these values for different virtual IPs)
-    let config = VpnConfig::new(10, 8, 0, 2);
-
-    // build async device
-    let dev = build_device(&config)?;
-    config.print_ip();
-
-    // start packet processing loop
-    packet_loop(dev).await
-}
+fn main() {}
+// #[tokio::main]
+// async fn main() -> Result<(), Box<dyn Error>> {
+//     println!("=== [VPN CLIENT]: INITIALIZING ===");
+//
+//     // load configuration
+//     let config = VpnConfig::from_env()?;
+//     let server_addr: SocketAddr = config.server_addr.parse()?;
+//
+//     // create TUN-interface
+//     let dev = Arc::new(build_device(&config)?);
+//     println!("[VPN CLIENT] TUN Interface created: {}", config.client_ip);
+//
+//     // build local UDP-socket
+//     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+//     println!(
+//         "[VPN CLIENT] Socket bound to local port: {}",
+//         socket.local_addr()?
+//     );
+//     println!("[VPN CLIENT] Target server: {}", server_addr);
+// }
